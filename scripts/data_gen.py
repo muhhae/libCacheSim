@@ -94,8 +94,18 @@ if __name__ == "__main__":
                     type=int,
                     default=86400 * 7,
                     help="Time span of all requests in seconds")
+    ap.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Seed for random machine default is random",
+    )
 
     p = ap.parse_args()
+
+    if p.seed is not None:
+        np.random.seed(p.seed)
+        random.seed(p.seed)
 
     output_file = open(p.bin_output, "wb") if p.bin_output != "" else None
     s = struct.Struct("<IQIq")
