@@ -13,7 +13,7 @@
 
 #include "../dataStructure/minvaluemap.hpp"
 #include "../dataStructure/splaytree.hpp"
-#include "../include/libCacheSim/const.h"
+#include "libCacheSim/const.h"
 
 mrcProfiler::MRCProfilerBase *mrcProfiler::create_mrc_profiler(
     mrc_profiler_e type, reader_t *reader, std::string output_path,
@@ -324,4 +324,7 @@ void mrcProfiler::MRCProfilerMINISIM::run() {
       hit_size_vec[i] = sum_obj_size_req - result[i].n_miss_byte;
     }
   }
+  // clean up
+  my_free(sizeof(cache_stat_t) * mrc_size_vec.size(), result);
+  free_request(req);
 }

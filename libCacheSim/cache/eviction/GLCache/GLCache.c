@@ -6,11 +6,11 @@
 #include <assert.h>
 #include <stdbool.h>
 
-#include "../../../dataStructure/hashtable/hashtable.h"
-#include "../../../include/libCacheSim/evictionAlgo.h"
 #include "GLCacheInternal.h"
 #include "cacheState.h"
 #include "const.h"
+#include "dataStructure/hashtable/hashtable.h"
+#include "libCacheSim/evictionAlgo.h"
 #include "obj.h"
 #include "utils.h"
 
@@ -128,7 +128,8 @@ static void GLCache_parse_init_params(const char *cache_specific_params,
  */
 cache_t *GLCache_init(const common_cache_params_t ccache_params,
                       const char *cache_specific_params) {
-  cache_t *cache = cache_struct_init("GLCache", ccache_params, cache_specific_params);
+  cache_t *cache =
+      cache_struct_init("GLCache", ccache_params, cache_specific_params);
 
   if (ccache_params.consider_obj_metadata) {
     cache->obj_md_size = 2 + 1 + 8;  // freq, bool, history
@@ -396,8 +397,8 @@ static cache_obj_t *GLCache_insert(cache_t *cache, const request_t *req) {
 
     seg = allocate_new_seg(cache, bucket->bucket_id);
     append_seg_to_bucket(params, bucket, seg);
-    VVERBOSE("%lu allocate new seg, %d in use seg\n", cache->n_req,
-             params->n_in_use_segs);
+    VERBOSE("%lu allocate new seg, %d in use seg\n", cache->n_req,
+            params->n_in_use_segs);
   }
 
   cache_obj_t *cache_obj = &seg->objs[seg->n_obj];
