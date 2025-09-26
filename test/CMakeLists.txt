@@ -1,14 +1,13 @@
 # Helper function to create test executables with explicit compiler flags
 function(add_test_executable target_name source_file)
     add_executable(${target_name} ${source_file})
-    
+
     # Apply appropriate compiler flags based on source file language
     get_filename_component(file_ext ${source_file} EXT)
     if(file_ext STREQUAL ".cpp" OR file_ext STREQUAL ".cxx" OR file_ext STREQUAL ".cc")
         # C++ source file
-        target_compile_options(${target_name} PRIVATE 
+        target_compile_options(${target_name} PRIVATE
             ${LIBCACHESIM_CXX_FLAGS}
-            ${tcmalloc_flags}
         )
         set_target_properties(${target_name} PROPERTIES
             CXX_STANDARD 17
@@ -17,13 +16,19 @@ function(add_test_executable target_name source_file)
         )
     else()
         # C source file
-        target_compile_options(${target_name} PRIVATE 
+        target_compile_options(${target_name} PRIVATE
             ${LIBCACHESIM_C_FLAGS}
-            ${tcmalloc_flags}
         )
     endif()
-    
-    target_link_libraries(${target_name} profiler_lib)
+
+    target_link_libraries(${target_name} ${PROJECT_NAME})
+
+    # Add include directories for test compilation
+    target_include_directories(${target_name} PRIVATE
+        ${CMAKE_SOURCE_DIR}/libCacheSim  # Add source dir to find utils/include/mymath.h
+        ${libCacheSim_include_dir}
+        ${GLib_INCLUDE_DIRS}
+    )
 endfunction()
 
 # Create C test executables
@@ -61,9 +66,3 @@ add_test(NAME testUtils COMMAND testUtils WORKING_DIRECTORY .)
 #     target_link_libraries(testGLCache ${all_modules} ${dependency_libs})
 #     add_test(NAME testGLCache COMMAND testGLCache WORKING_DIRECTORY .)
 # endif (ENABLE_GLCACHE)
-
-if (ENABLE_3L_CACHE)
-    add_executable(test3LCache test_3lcache.c)
-    target_link_libraries(test3LCache ${core_libs} ${dependency_libs})
-    add_test(NAME test3LCache COMMAND test3LCache WORKING_DIRECTORY .)
-endif (ENABLE_3L_CACHE)

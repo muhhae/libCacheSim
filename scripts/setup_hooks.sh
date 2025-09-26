@@ -34,15 +34,19 @@ GIT_ROOT=$(git rev-parse --show-toplevel)
 cd "$GIT_ROOT"
 
 # Get a list of staged files
-STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.([ch](pp)?|cc)$' || true)
+STAGED_CPP_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.([ch](pp)?|cc)$' || true)
+# Convert Python files to array for proper handling of filenames with spaces
+readarray -t STAGED_PY_FILES_ARRAY < <(git diff --cached --name-only --diff-filter=ACM | grep -E '\.py$' || true)
+STAGED_PY_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.py$' || true)
 
-if [ -z "$STAGED_FILES" ]; then
-    echo -e "${GREEN}No C/C++ files to check.${NC}"
+if [ -z "$STAGED_CPP_FILES" ] && [ ${#STAGED_PY_FILES_ARRAY[@]} -eq 0 ]; then
+    echo -e "${GREEN}No C/C++ or Python files to check.${NC}"
     exit 0
 fi
 
-NUM_FILES=$(echo "$STAGED_FILES" | wc -l)
-echo -e "${BLUE}Found ${NUM_FILES} files to check${NC}"
+NUM_CPP_FILES=$(echo "$STAGED_CPP_FILES" | grep -c . || echo "0")
+NUM_PY_FILES=${#STAGED_PY_FILES_ARRAY[@]}
+echo -e "${BLUE}Found ${NUM_CPP_FILES} C/C++ files and ${NUM_PY_FILES} Python files to check${NC}"
 
 # Create a temporary build directory for linting
 TEMP_BUILD_DIR=$(mktemp -d)
@@ -61,7 +65,7 @@ echo -e "${BLUE}Configuring temporary build for linting...${NC}"
 mkdir -p "$TEMP_BUILD_DIR"
 cd "$TEMP_BUILD_DIR"
 CMAKE_LOG="$LOG_DIR/cmake.log"
-cmake -DCMAKE_BUILD_TYPE=Debug \
+cmake -G Ninja -DCMAKE_BUILD_TYPE=Debug \
       -DCMAKE_C_FLAGS="-Wall -Wextra -Werror -Wno-unused-variable -Wno-unused-function -Wno-unused-parameter -Wno-unused-but-set-variable -Wpedantic -Wformat=2 -Wformat-security -Wshadow -Wwrite-strings -Wstrict-prototypes -Wold-style-definition -Wredundant-decls -Wnested-externs -Wmissing-include-dirs" \
       -DCMAKE_CXX_FLAGS="-Wall -Wextra -Werror -Wno-unused-variable -Wno-unused-function -Wno-unused-parameter -Wno-unused-but-set-variable -Wno-pedantic -Wformat=2 -Wformat-security -Wshadow -Wwrite-strings -Wmissing-include-dirs" \
       -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
@@ -89,26 +93,26 @@ show_elapsed() {
     echo -e "${BLUE}Time elapsed: ${elapsed}s${NC}"
 }
 
-# Check if clang-format exists
-if command -v clang-format >/dev/null 2>&1; then
+# Check if clang-format exists and there are C++ files to check
+if command -v clang-format >/dev/null 2>&1 && [ -n "$STAGED_CPP_FILES" ]; then
     echo -e "${BLUE}Running clang-format checks in parallel (max $MAX_JOBS jobs)...${NC}"
     FORMAT_TIME=$(date +%s)
-    
+
     # Create a temporary file to capture errors
     FORMAT_ERROR_LOG="$LOG_DIR/format_errors.log"
     touch "$FORMAT_ERROR_LOG"
-    
+
     # Create a file to track error count from subshells
     FORMAT_ERROR_COUNT_FILE="$LOG_DIR/format_error_count.txt"
     echo "0" > "$FORMAT_ERROR_COUNT_FILE"
-    
+
     cd "$GIT_ROOT"
-    
+
     # Run clang-format on each file in parallel
     PIDS=()
     FILES_CHECKED=0
-    
-    for FILE in $STAGED_FILES; do
+
+    for FILE in $STAGED_CPP_FILES; do
         # If we've hit the max jobs limit, wait for one to finish
         while [ ${#PIDS[@]} -ge $MAX_JOBS ]; do
             # Wait for any job to finish, then remove it from the array
@@ -120,21 +124,21 @@ if command -v clang-format >/dev/null 2>&1; then
             # Only wait a bit before checking again
             sleep 0.1
         done
-        
+
         # Track progress
         FILES_CHECKED=$((FILES_CHECKED + 1))
-        PROGRESS=$((FILES_CHECKED * 100 / NUM_FILES))
+        PROGRESS=$((FILES_CHECKED * 100 / NUM_CPP_FILES))
         echo -e "  [${PROGRESS}%] Checking formatting for ${BLUE}$FILE${NC}"
-        
+
         # Create a log file for this specific file
         FORMAT_LOG="$LOG_DIR/format_$(basename "$FILE").log"
-        
+
         # Run clang-format in background
         (
             if ! clang-format --dry-run --Werror "$FILE" > "$FORMAT_LOG" 2>&1; then
                 echo -e "  ${YELLOW}Formatting issues in $FILE (see $FORMAT_LOG)${NC}"
                 echo "$FILE" >> "$FORMAT_ERROR_LOG"
-                
+
                 # Update the error count in the shared file
                 flock "$FORMAT_ERROR_COUNT_FILE" bash -c "
                     COUNT=\$(cat \"$FORMAT_ERROR_COUNT_FILE\")
@@ -142,11 +146,11 @@ if command -v clang-format >/dev/null 2>&1; then
                 "
             fi
         ) &
-        
+
         # Store the PID
         PIDS+=($!)
     done
-    
+
     # Wait for all remaining jobs to finish with a progress indicator
     echo -e "${BLUE}Waiting for all clang-format jobs to complete...${NC}"
     while [ ${#PIDS[@]} -gt 0 ]; do
@@ -159,10 +163,10 @@ if command -v clang-format >/dev/null 2>&1; then
         sleep 1
     done
     echo -e "\n${BLUE}All clang-format jobs completed.${NC}"
-    
+
     # Read the final error count
     FORMAT_ERRORS=$(cat "$FORMAT_ERROR_COUNT_FILE")
-    
+
     # Report the results
     if [ -s "$FORMAT_ERROR_LOG" ]; then
         echo -e "${RED}Found formatting issues in $FORMAT_ERRORS files. Commit blocked.${NC}"
@@ -177,7 +181,51 @@ if command -v clang-format >/dev/null 2>&1; then
     echo -e "${BLUE}Format check completed in $(($(date +%s) - FORMAT_TIME))s${NC}"
     cd "$TEMP_BUILD_DIR"
 else
-    echo -e "${YELLOW}clang-format not found, skipping format checks${NC}"
+    if [ -n "$STAGED_CPP_FILES" ]; then
+        echo -e "${YELLOW}clang-format not found, skipping C++ format checks${NC}"
+    fi
+fi
+
+# Check Python files with ruff
+if [ ${#STAGED_PY_FILES_ARRAY[@]} -gt 0 ]; then
+    if command -v ruff >/dev/null 2>&1; then
+        echo -e "${BLUE}Running ruff checks on Python files...${NC}"
+        RUFF_TIME=$(date +%s)
+
+        cd "$GIT_ROOT"
+
+        # Create log file for ruff output
+        RUFF_LOG="$LOG_DIR/ruff.log"
+        RUFF_FORMAT_LOG="$LOG_DIR/ruff_format.log"
+
+        # Run ruff check (linting)
+        echo -e "${BLUE}Running ruff linting...${NC}"
+        if ! ruff check "${STAGED_PY_FILES_ARRAY[@]}" > "$RUFF_LOG" 2>&1; then
+            echo -e "${RED}ruff found linting issues. Commit blocked.${NC}"
+            echo -e "  See ruff log at: $RUFF_LOG"
+            echo -e "  You can fix some issues automatically with: ruff check --fix"
+            echo -e "  Or bypass this check with: SKIP_LINT=1 git commit"
+            exit 1
+        fi
+
+        # Run ruff format check
+        echo -e "${BLUE}Running ruff format check...${NC}"
+        if ! ruff format --check "${STAGED_PY_FILES_ARRAY[@]}" > "$RUFF_FORMAT_LOG" 2>&1; then
+            echo -e "${RED}ruff found formatting issues. Commit blocked.${NC}"
+            echo -e "  See ruff format log at: $RUFF_FORMAT_LOG"
+            echo -e "  You can fix formatting issues with: ruff format <files>"
+            echo -e "  Or bypass this check with: SKIP_LINT=1 git commit"
+            exit 1
+        fi
+
+        echo -e "${GREEN}Python ruff checks passed!${NC}"
+        echo -e "${BLUE}ruff checks completed in $(($(date +%s) - RUFF_TIME))s${NC}"
+    else
+        echo -e "${YELLOW}ruff not found, skipping Python code quality checks${NC}"
+        echo -e "${YELLOW}Install ruff with: pip install ruff${NC}"
+    fi
+else
+    echo -e "${GREEN}No Python files to check with ruff.${NC}"
 fi
 
 ## Todo(jason): disable clang-tidy checks for now because it reports too many CXX header not found
@@ -185,19 +233,19 @@ fi
 # if command -v clang-tidy >/dev/null 2>&1; then
 #     echo -e "${BLUE}Running clang-tidy checks in parallel (max $MAX_JOBS jobs)...${NC}"
 #     TIDY_TIME=$(date +%s)
-    
+
 #     # Create a temporary file to capture errors
 #     ERROR_LOG="$LOG_DIR/tidy_errors.log"
 #     touch "$ERROR_LOG"
-    
+
 #     # Create a file to track error count from subshells
 #     ERROR_COUNT_FILE="$LOG_DIR/error_count.txt"
 #     echo "0" > "$ERROR_COUNT_FILE"
-    
+
 #     # Run clang-tidy on each file in parallel
 #     PIDS=()
 #     FILES_CHECKED=0
-    
+
 #     for FILE in $STAGED_FILES; do
 #         # If we've hit the max jobs limit, wait for one to finish
 #         while [ ${#PIDS[@]} -ge $MAX_JOBS ]; do
@@ -210,15 +258,15 @@ fi
 #             # Only wait a bit before checking again
 #             sleep 0.1
 #         done
-        
+
 #         # Track progress
 #         FILES_CHECKED=$((FILES_CHECKED + 1))
 #         PROGRESS=$((FILES_CHECKED * 100 / NUM_FILES))
 #         echo -e "  [${PROGRESS}%] Checking ${BLUE}$FILE${NC} with clang-tidy"
-        
+
 #         # Create a log file for this specific file
 #         TIDY_LOG="$LOG_DIR/tidy_$(basename "$FILE").log"
-        
+
 #         # Run clang-tidy in background
 #         (
 #             # Run clang-tidy with a selected set of checks
@@ -228,7 +276,7 @@ fi
 #                 "$GIT_ROOT/$FILE" > "$TIDY_LOG" 2>&1; then
 #                 echo -e "  ${YELLOW}clang-tidy found issues in $FILE (see $TIDY_LOG)${NC}"
 #                 echo "$FILE" >> "$ERROR_LOG"
-                
+
 #                 # Update the error count in the shared file
 #                 flock "$ERROR_COUNT_FILE" bash -c "
 #                     COUNT=\$(cat \"$ERROR_COUNT_FILE\")
@@ -236,11 +284,11 @@ fi
 #                 "
 #             fi
 #         ) &
-        
+
 #         # Store the PID
 #         PIDS+=($!)
 #     done
-    
+
 #     # Wait for all remaining jobs to finish with a progress indicator
 #     echo -e "${BLUE}Waiting for all clang-tidy jobs to complete...${NC}"
 #     while [ ${#PIDS[@]} -gt 0 ]; do
@@ -253,10 +301,10 @@ fi
 #         sleep 1
 #     done
 #     echo -e "\n${BLUE}All clang-tidy jobs completed.${NC}"
-    
+
 #     # Read the final error count
 #     FILES_WITH_ISSUES=$(cat "$ERROR_COUNT_FILE")
-    
+
 #     # Report the results
 #     if [ -s "$ERROR_LOG" ]; then
 #         echo -e "${RED}clang-tidy found issues in $FILES_WITH_ISSUES files. Commit blocked.${NC}"
@@ -278,7 +326,7 @@ fi
 # cd "$TEMP_BUILD_DIR"
 
 # COMPILE_LOG="$LOG_DIR/compile.log"
-# if make -j$MAX_JOBS > "$COMPILE_LOG" 2>&1; then
+# if ninja > "$COMPILE_LOG" 2>&1; then
 #     echo -e "${GREEN}Compilation successful!${NC}"
 # else
 #     echo -e "${RED}Compilation failed. Please fix the warnings before committing.${NC}"

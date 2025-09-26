@@ -4,9 +4,7 @@
 #include <string>
 
 #include "ThreeLCache.hpp"
-#include "dataStructure/hashtable/hashtable.h"
 #include "libCacheSim/cache.h"
-#include "libCacheSim/evictionAlgo.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -17,7 +15,7 @@ typedef struct {
   char *objective;
   SimpleRequest ThreeLCache_req;
 
-  pair<uint64_t, int32_t> to_evict_pair;
+  std::pair<uint64_t, int32_t> to_evict_pair;
   cache_obj_t obj_tmp;
 } ThreeLCache_params_t;
 
@@ -92,6 +90,11 @@ cache_t *ThreeLCache_init(const common_cache_params_t ccache_params,
   ThreeLCache_params_t *params = my_malloc(ThreeLCache_params_t);
   cache->eviction_params = params;
 
+  // init
+  params->ThreeLCache_cache = nullptr;
+  params->objective = nullptr;
+  params->to_evict_pair = std::make_pair(0, 0);
+
   ThreeLCache_parse_params(cache, DEFAULT_PARAMS);
   if (cache_specific_params != NULL) {
     ThreeLCache_parse_params(cache, cache_specific_params);
@@ -132,6 +135,7 @@ static void ThreeLCache_free(cache_t *cache) {
   free(cache->to_evict_candidate);
   if (params->objective != NULL) {
     free(params->objective);
+    params->objective = NULL;
   }
   my_free(sizeof(ThreeLCache_params_t), params);
   cache_struct_free(cache);
@@ -236,7 +240,7 @@ static cache_obj_t *ThreeLCache_to_evict(cache_t *cache, const request_t *req) {
   auto *params = static_cast<ThreeLCache_params_t *>(cache->eviction_params);
   auto *ThreeLCache =
       static_cast<ThreeLCache::ThreeLCacheCache *>(params->ThreeLCache_cache);
-  // ThreeLCache rank变成了evict_preobj
+  // ThreeLCache rank becomes evict_predobj
   params->to_evict_pair = ThreeLCache->evict_predobj();
   auto &meta = ThreeLCache->in_cache.metas[params->to_evict_pair.second];
 
@@ -319,7 +323,7 @@ static const char *ThreeLCache_current_params(cache_t *cache,
   static __thread char params_str[128];
   int n = snprintf(params_str, 128, "objective=%s", params->objective);
 
-  snprintf(cache->cache_name + n, 128 - n, "\n");
+  snprintf(params_str + n, 128 - n, "\n");
 
   return params_str;
 }
@@ -328,13 +332,20 @@ static void ThreeLCache_parse_params(cache_t *cache,
                                      const char *cache_specific_params) {
   ThreeLCache_params_t *params = (ThreeLCache_params_t *)cache->eviction_params;
   char *params_str = strdup(cache_specific_params);
-  char *end;
+  char *original_params_str = params_str;  // preserve the original pointer
 
   while (params_str != NULL && params_str[0] != '\0') {
     /* different parameters are separated by comma,
      * key and value are separated by = */
     char *key = strsep((char **)&params_str, "=");
     char *value = strsep((char **)&params_str, ",");
+
+    if (key == NULL || value == NULL) {
+      ERROR("invalid parameter format in %s: %s\n", cache->cache_name,
+            cache_specific_params);
+      free(original_params_str);
+      exit(1);
+    }
 
     // skip the white space
     while (params_str != NULL && *params_str == ' ') {
@@ -344,6 +355,7 @@ static void ThreeLCache_parse_params(cache_t *cache,
     if (strcasecmp(key, "objective") == 0) {
       if (params->objective != NULL) {
         free(params->objective);
+        params->objective = NULL;
       }
       params->objective = strdup(value);
       if (params->objective == NULL) {
@@ -352,13 +364,15 @@ static void ThreeLCache_parse_params(cache_t *cache,
     } else if (strcasecmp(key, "print") == 0) {
       printf("current parameters: %s\n",
              ThreeLCache_current_params(cache, params));
+      free(original_params_str);
       exit(0);
     } else {
       ERROR("%s does not have parameter %s\n", cache->cache_name, key);
+      free(original_params_str);
       exit(1);
     }
   }
-  free(params_str);
+  free(original_params_str);
 }
 #ifdef __cplusplus
 }

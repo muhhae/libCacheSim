@@ -15,6 +15,7 @@ set(CMAKE_CXX_EXTENSIONS Off)
 
 # export compile commands, useful for IDEs
 set(EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Define build options
 # echo madvise | sudo tee /sys/kernel/mm/transparent_hugepage/enabled
@@ -25,6 +26,7 @@ option(SUPPORT_TTL "whether support TTL" OFF)
 option(OPT_SUPPORT_ZSTD_TRACE "whether support zstd trace" ON)
 option(ENABLE_LRB "enable LRB" OFF)
 option(ENABLE_3L_CACHE "enable 3LCache" OFF)
+option(BUILD_SHARED_LIBS "build shared library" ON)
 set(LOG_LEVEL "default" CACHE STRING "change the logging level")
 set_property(CACHE LOG_LEVEL PROPERTY STRINGS ERROR WARN INFO DEBUG VERBOSE DEFAULT)
 
@@ -61,7 +63,7 @@ string(TOLOWER "${LOG_LEVEL}" LOG_LEVEL_LOWER)
 string(TOLOWER "${CMAKE_BUILD_TYPE}" CMAKE_BUILD_TYPE_LOWER)
 
 if(LOG_LEVEL_LOWER STREQUAL "default")
-    if(CMAKE_BUILD_TYPE_LOWER MATCHES "Debug")
+    if(CMAKE_BUILD_TYPE_LOWER MATCHES "debug")
         message(STATUS "LOG_LEVEL is not set, use DEBUG as default for debug build")
         add_compile_definitions(LOGLEVEL=6)
     else()
@@ -86,16 +88,16 @@ endif()
 
 
 # Define shared compiler flags for all targets
-set(LIBCACHESIM_C_FLAGS 
-    -Wall -Wextra -Werror 
-    -Wno-unused-variable -Wno-unused-function -Wno-unused-parameter -Wno-unused-but-set-variable 
-    -Wpedantic -Wformat=2 -Wformat-security -Wshadow -Wwrite-strings 
+set(LIBCACHESIM_C_FLAGS
+    -Wall -Wextra -Werror
+    -Wno-unused-variable -Wno-unused-function -Wno-unused-parameter -Wno-unused-but-set-variable
+    -Wpedantic -Wformat=2 -Wformat-security -Wshadow -Wwrite-strings
     -Wstrict-prototypes -Wold-style-definition -Wredundant-decls -Wnested-externs -Wmissing-include-dirs
 )
 
-set(LIBCACHESIM_CXX_FLAGS 
-    -Wall -Wextra -Werror 
-    -Wno-deprecated-copy -Wno-unused-variable -Wno-unused-function -Wno-unused-parameter -Wno-unused-but-set-variable 
+set(LIBCACHESIM_CXX_FLAGS
+    -Wall -Wextra -Werror
+    -Wno-deprecated-copy -Wno-unused-variable -Wno-unused-function -Wno-unused-parameter -Wno-unused-but-set-variable
     -Wno-pedantic -Wformat=2 -Wformat-security -Wshadow -Wwrite-strings -Wmissing-include-dirs
 )
 
@@ -112,28 +114,39 @@ include(GNUInstallDirs)
 set(dependency_libs "")
 
 find_package(Threads REQUIRED)
-set(dependency_libs ${dependency_libs} ${CMAKE_THREAD_LIBS_INIT})
+list(APPEND dependency_libs ${CMAKE_THREAD_LIBS_INIT})
 
-find_package(GLib REQUIRED)
-include_directories(${GLib_INCLUDE_DIRS})
-set(dependency_libs ${dependency_libs} ${GLib_LIBRARY})
+# Link standard math and dl libraries universally
+list(APPEND dependency_libs m dl)
+
+# Find GLib using pkg-config
+find_package(PkgConfig REQUIRED)
+
+# Find glib-2.0 using pkg-config
+pkg_check_modules(GLib REQUIRED glib-2.0)
+
+# Add GLib library directories to the linker search path
+link_directories(${GLib_LIBRARY_DIRS})
+
+# Don't add GLib includes globally - add them to specific targets
+# include_directories(${GLib_INCLUDE_DIRS})
+list(APPEND dependency_libs ${GLib_LIBRARIES})
 
 find_package(argp REQUIRED)
-include_directories(${ARGP_INCLUDE_DIRS})
-set(dependency_libs ${dependency_libs} ${ARGP_LIBRARY})
+# Don't add argp includes globally
+# include_directories(${ARGP_INCLUDE_DIRS})
+list(APPEND dependency_libs ${ARGP_LIBRARY})
 
 if(OPT_SUPPORT_ZSTD_TRACE)
     add_compile_definitions(SUPPORT_ZSTD_TRACE=1)
     find_package(ZSTD)
-
-    include_directories(${ZSTD_INCLUDE_DIR})
-
+    message(STATUS "ZSTD_INCLUDE_DIR ${ZSTD_INCLUDE_DIR}, ZSTD_LIBRARIES ${ZSTD_LIBRARIES}")
     if("${ZSTD_LIBRARIES}" STREQUAL "")
         message(FATAL_ERROR "zstd not found")
+    else()
+        include_directories(${ZSTD_INCLUDE_DIR})
+        list(APPEND dependency_libs ${ZSTD_LIBRARIES})
     endif()
-
-    set(dependency_libs ${dependency_libs} ${ZSTD_LIBRARIES})
-    message(STATUS "ZSTD_INCLUDE_DIR ${ZSTD_INCLUDE_DIR}, ZSTD_LIBRARIES ${ZSTD_LIBRARIES}")
 endif()
 
 # TCMalloc (libgoogle-perftools-dev google-perftools)
@@ -146,9 +159,10 @@ if(NOT ${CMAKE_BUILD_TYPE} MATCHES "Debug")
     if("${Tcmalloc_LIBRARY}" STREQUAL "")
         message(STATUS "!!! cannot find tcmalloc")
     else()
-        set(dependency_libs ${dependency_libs} ${Tcmalloc_LIBRARIES})
+        list(APPEND dependency_libs ${Tcmalloc_LIBRARIES})
         # tcmalloc flags will be set per target instead of globally
         set(tcmalloc_flags "-fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc -fno-builtin-free")
+        list(APPEND LIBCACHESIM_C_FLAGS ${tcmalloc_flags})
     endif()
 endif()
 
@@ -157,7 +171,7 @@ find_package(Threads)
 if(ENABLE_GLCACHE)
     find_package(xgboost REQUIRED)
     include_directories(${XGBOOST_INCLUDE_DIR})
-    set(dependency_libs ${dependency_libs} xgboost::xgboost)
+    list(APPEND dependency_libs xgboost::xgboost)
     add_compile_definitions(ENABLE_GLCACHE=1)
     message(STATUS "XGBOOST_INCLUDE_DIR=${XGBOOST_INCLUDE_DIR}")
 endif()
@@ -168,13 +182,13 @@ foreach(FEATURE ENABLE_LRB ENABLE_3L_CACHE)
         if(NOT LIGHTGBM_PATH)
             message(FATAL_ERROR "LIGHTGBM_PATH not found")
         endif()
-        include_directories(${LIGHTGBM_PATH})
+        # include_directories(${LIGHTGBM_PATH})
 
         find_library(LIGHTGBM_LIB _lightgbm)
         if(NOT LIGHTGBM_LIB)
             message(FATAL_ERROR "LIGHTGBM_LIB not found")
         endif()
-        set(dependency_libs ${dependency_libs} ${LIGHTGBM_LIB})
+        list(APPEND dependency_libs ${LIGHTGBM_LIB})
         add_compile_definitions(${FEATURE}=1)
     endif()
 endforeach()
@@ -214,18 +228,11 @@ message(STATUS "============= Status of optional features ==============")
 message(STATUS "========================================================")
 
 # Define include directories for reuse in subdirectories
-set(libCacheSim_include_dir ${CMAKE_CURRENT_SOURCE_DIR}/libCacheSim/include ${CMAKE_CURRENT_SOURCE_DIR}/libCacheSim/utils/include ${CMAKE_CURRENT_SOURCE_DIR}/libCacheSim)
-set(libCacheSim_binary_include_dir ${CMAKE_CURRENT_BINARY_DIR}/libCacheSim/include)
-
-include_directories(${libCacheSim_include_dir})
-include_directories(${libCacheSim_binary_include_dir})
-# Restructured to avoid transitive dependency duplicates
-# profiler_lib already includes cache_lib_c, cache_lib_cpp, traceReader_lib (which includes utils_lib)
-# Only include top-level libraries to avoid duplicates
-set(all_modules cache_lib_c cache_lib_cpp traceReader_lib profiler_lib dataStructure_lib utils_lib traceAnalyzer_lib mrcProfiler_lib)
-# For linking: use minimal sets to avoid transitive dependency duplicates
-set(core_libs cache_lib_c cache_lib_cpp traceReader_lib dataStructure_lib utils_lib)
-set(high_level_libs profiler_lib traceAnalyzer_lib)
+set(libCacheSim_include_dir
+    ${CMAKE_CURRENT_SOURCE_DIR}/libCacheSim/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/libCacheSim/utils/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/libCacheSim
+)
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/libCacheSim/cache)
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/libCacheSim/dataStructure)
@@ -248,26 +255,75 @@ else()
     message(STATUS "Building without test")
 endif()
 
-
 # libCacheSim unified library compilation and installation
 # Create a single library that combines all modular libraries
-add_library(${PROJECT_NAME} INTERFACE)
-
-# Link all modular libraries into the unified library
-target_link_libraries(${PROJECT_NAME} INTERFACE ${high_level_libs})
+add_library(${PROJECT_NAME} STATIC
+    $<TARGET_OBJECTS:cache_lib_c>
+    $<TARGET_OBJECTS:cache_lib_cpp>
+    $<TARGET_OBJECTS:traceReader_lib>
+    $<TARGET_OBJECTS:profiler_lib>
+    $<TARGET_OBJECTS:dataStructure_lib>
+    $<TARGET_OBJECTS:utils_lib>
+    $<TARGET_OBJECTS:traceAnalyzer_lib>
+    $<TARGET_OBJECTS:mrcProfiler_lib>
+)
 
 # Set include directories for the unified library
 target_include_directories(${PROJECT_NAME} INTERFACE
-    $<BUILD_INTERFACE:${libCacheSim_include_dir}>
-    $<BUILD_INTERFACE:${libCacheSim_binary_include_dir}>
+    # Use separate BUILD_INTERFACE for each directory to avoid list expansion issues
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libCacheSim/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libCacheSim/utils/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libCacheSim/>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
-# Link dependencies for the unified library
-target_link_libraries(${PROJECT_NAME} INTERFACE ${dependency_libs})
+
+# Link the static library to all required dependencies
+target_link_libraries(${PROJECT_NAME} PUBLIC ${dependency_libs})
 
 # Set version and properties
 set_target_properties(${PROJECT_NAME} PROPERTIES VERSION ${${PROJECT_NAME}_VERSION})
+
+# Install the static library
+install(TARGETS ${PROJECT_NAME}
+    EXPORT ${PROJECT_NAME}Targets
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+
+if(BUILD_SHARED_LIBS)
+    add_library(${PROJECT_NAME}_shared SHARED
+        $<TARGET_OBJECTS:cache_lib_c>
+        $<TARGET_OBJECTS:cache_lib_cpp>
+        $<TARGET_OBJECTS:traceReader_lib>
+        $<TARGET_OBJECTS:profiler_lib>
+        $<TARGET_OBJECTS:dataStructure_lib>
+        $<TARGET_OBJECTS:utils_lib>
+        $<TARGET_OBJECTS:traceAnalyzer_lib>
+        $<TARGET_OBJECTS:mrcProfiler_lib>
+    )
+
+    target_include_directories(${PROJECT_NAME}_shared INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libCacheSim/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libCacheSim/utils/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/libCacheSim/>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    )
+
+    target_link_libraries(${PROJECT_NAME}_shared PUBLIC ${dependency_libs})
+
+    set_target_properties(${PROJECT_NAME}_shared PROPERTIES VERSION ${${PROJECT_NAME}_VERSION})
+
+    install(TARGETS ${PROJECT_NAME}_shared
+        EXPORT ${PROJECT_NAME}Targets
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
+endif()
+
 
 # Configuration files
 configure_file(${PROJECT_SOURCE_DIR}/${PROJECT_NAME}.pc.in ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.pc @ONLY)
@@ -281,17 +337,8 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}.pc
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/Find${PROJECT_NAME}.cmake
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME} COMPONENT dev)
 
-# Install all modular libraries and the unified interface library
-install(TARGETS ${PROJECT_NAME} ${all_modules}
-    EXPORT ${PROJECT_NAME}Targets
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-)
-
 # Install the export file
 install(EXPORT ${PROJECT_NAME}Targets
     FILE ${PROJECT_NAME}Targets.cmake
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}
 )
-

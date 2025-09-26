@@ -102,7 +102,7 @@ fi
 setup_ubuntu() {
 	log_info "Setting up Ubuntu dependencies..."
 	sudo apt update
-	sudo apt install -yqq build-essential google-perftools xxhash
+	sudo apt install -yqq build-essential google-perftools xxhash ninja-build
 	sudo apt install -yqq libglib2.0-dev libunwind-dev
 	sudo apt install -yqq libgoogle-perftools-dev
 }
@@ -124,7 +124,7 @@ setup_macOS() {
 		log_error "Homebrew is not installed. Please install Homebrew first."
 		exit 1
 	fi
-	brew install glib google-perftools argp-standalone xxhash llvm wget cmake zstd xgboost lightgbm
+	brew install glib google-perftools argp-standalone xxhash llvm wget cmake ninja zstd xgboost lightgbm
 }
 
 # Install CMake
@@ -165,13 +165,9 @@ install_xgboost() {
 	pushd xgboost >/dev/null
 	mkdir -p build
 	pushd build >/dev/null
-	cmake ..
-	if [[ ${GITHUB_ACTIONS-} == "true" ]]; then
-		make
-	else
-		make -j
-	fi
-	sudo make install
+	cmake -G Ninja ..
+	ninja
+	sudo ninja install
 	popd >/dev/null
 	popd >/dev/null
 	popd >/dev/null
@@ -187,13 +183,9 @@ install_lightgbm() {
 	pushd LightGBM >/dev/null
 	mkdir -p build
 	pushd build >/dev/null
-	cmake ..
-	if [[ ${GITHUB_ACTIONS-} == "true" ]]; then
-		make
-	else
-		make -j
-	fi
-	sudo make install
+	cmake -G Ninja ..
+	ninja
+	sudo ninja install
 	popd >/dev/null
 	popd >/dev/null
 	popd >/dev/null
@@ -202,8 +194,20 @@ install_lightgbm() {
 # Install Zstd
 install_zstd() {
 	log_info "Installing Zstd..."
-	pushd /tmp/ >/dev/null
 	local zstd_version="1.5.0"
+	# Check if Zstd exists
+	if command -v zstd &>/dev/null; then
+		local installed_version
+		installed_version=$(zstd --version | grep -oE 'v[0-9.]+' | sed 's/^v//')
+		if [[ $installed_version == "$zstd_version" ]]; then
+			log_info "Zstd version $zstd_version already installed."
+			return 0
+		else
+			log_info "Zstd is installed but version is $installed_version (expecting $zstd_version). Proceeding to install..."
+		fi
+	fi
+	# Install
+	pushd /tmp/ >/dev/null
 	if [[ ! -f "zstd-${zstd_version}.tar.gz" ]]; then
 		wget "https://github.com/facebook/zstd/releases/download/v${zstd_version}/zstd-${zstd_version}.tar.gz"
 		tar xf "zstd-${zstd_version}.tar.gz"
@@ -211,9 +215,9 @@ install_zstd() {
 	pushd "zstd-${zstd_version}/build/cmake/" >/dev/null
 	mkdir -p _build
 	pushd _build >/dev/null
-	cmake ..
-	make -j
-	sudo make install
+	cmake -G Ninja ..
+	ninja
+	sudo ninja install
 	popd >/dev/null
 	popd >/dev/null
 	popd >/dev/null
